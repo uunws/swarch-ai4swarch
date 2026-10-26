@@ -35,10 +35,10 @@ language: Thai
 
 | เกณฑ์ | Run a | Run b |
 |---|---|---|
-| ใช้ตัวเลขจาก scenario หรือไม่ (latency, ช่วงพีก, ข้อจำกัดของ MailFast) | | |
-| ทางเลือกที่พิจารณา (ระบุ) | | |
-| จัดการแต้มสะสมแบบ "ครั้งเดียวเท่านั้น" และ rate limit ของ MailFast หรือไม่ อย่างไร | | |
-| มีสิ่งที่แต่งขึ้นเองหรือไม่ (ตัวเลข เครื่องมือ หรือข้อเท็จจริงที่ไม่มีใน scenario) | | |
+| ใช้ตัวเลขจาก scenario หรือไม่ (latency, ช่วงพีก, ข้อจำกัดของ MailFast) | ไม่ใช้เลย เพราะไม่มีข้อมูล จึงย้ายทั้งหมดไปไว้ใน Open questions | ใช้ครบ: p95 ≤ 500 ms (ปัจจุบันประมาณ 300 ms), 200 orders/s, MailFast p95 1.5 s / p99 8 s / 0.5 % / 50 emails/s, loyalty ภายใน 1 นาที, ทีม 4 คนถนัด Go และมี 2 คนเคยใช้ RabbitMQ แล้วคำนวณ backlog ว่า email จะค้างเพิ่ม 9,000 ฉบับต่อนาทีของ peak |
+| ทางเลือกที่พิจารณา (ระบุ) | 1) เรียกแบบ synchronous 2) async ใน process 3) event + message broker (ไม่ระบุชื่อ broker) 4) workflow engine → เลือกข้อ 3 | 1) ต่อ synchronous chain เดิม 2) goroutine แบบ fire-and-forget ใน checkout 3) RabbitMQ 4) Kafka → เลือก RabbitMQ เพราะทีมเคยใช้ |
+| จัดการแต้มสะสมแบบ "ครั้งเดียวเท่านั้น" และ rate limit ของ MailFast หรือไม่ อย่างไร | ทั่วไป: consumer แบบ idempotent ใช้ order ID ป้องกันซ้ำ, retry + backoff + DLQ ส่วน rate limit แค่บอกว่า "ขึ้นกับ limit ของ MailFast" | ชัดเจน: at-least-once + ตาราง `processed_orders` ที่ `order_id` เป็น unique ใน transaction เดียวกับการให้แต้ม, แยก queue ของ loyalty ไม่ให้รอ email, จำกัด 50/s แบบ global ทุก replica, ชี้ว่า checkout ไม่มี DB จึงทำ outbox ไม่ได้ (`main.go:66-86`) |
+| มีสิ่งที่แต่งขึ้นเองหรือไม่ (ตัวเลข เครื่องมือ หรือข้อเท็จจริงที่ไม่มีใน scenario) | แทบไม่มี เพราะไม่ระบุตัวเลขหรือเครื่องมือเลย แต่ ADR จึงกว้างเกินจนนำไปใช้จริงไม่ได้ | มี: publish timeout "≤ 50 ms", RabbitMQ "quorum queues 3 nodes", การ propagate trace ทาง message header และ schema แบบ protobuf ไม่มีใน scenario ทั้งหมด ส่วน Kafka ที่ว่า "ไม่มีใครในทีมเคยใช้" เป็นการตีความจาก "สองคนเคยใช้ RabbitMQ" |
 
 ## รับผิดชอบ ADR ฉบับสุดท้ายของตัวเอง
 
@@ -51,6 +51,7 @@ language: Thai
 
 | # | สิ่งที่เปลี่ยนจากร่างของ AI | เหตุผล |
 |---|---|---|
-| 1 | | |
-| 2 | | |
-| 3 | | |
+| 1 | ตัดค่า publish timeout "≤ 50 ms" ออก ให้ตั้งค่า timeout, polling interval และ batch size ของ outbox relay จากผล load test แทน (Decision ข้อ 2, Validation) | ตัวเลข 50 ms AI แต่งขึ้นเอง ไม่มีใน scenario ถ้าใส่ไว้ คนอ่านจะเข้าใจว่าเป็นข้อกำหนดที่มีที่มา |
+| 2 | ตัด "replicated across 3 RabbitMQ nodes" ออก ให้กำหนดจำนวน node จาก load test และ availability target แล้วเพิ่ม availability target เป็นคำถามใน Open questions (Decision ข้อ 3) | จำนวน node ไม่มีใน scenario และมีผลกับทั้งค่าใช้จ่ายและ availability จึงควรตัดสินจากข้อมูล ไม่ใช่ค่าที่ AI เดา |
+| 3 | เพิ่ม order database (PostgreSQL แบบ self-hosted) + transactional outbox ใน `checkoutservice` และ outbox relay ส่ง event ไป RabbitMQ แทนการ publish ตรงจาก `PlaceOrder` พร้อมอัปเดตชื่อ ADR, Consequences, Risks, Validation และตัดคำถามเรื่องนี้ออกจาก Open questions | AI ทิ้งไว้เป็นคำถามว่าถ้า RabbitMQ ล่มจะยอมให้ event หายไหม เลือกไม่ยอม เพราะ event ที่หายแปลว่าลูกค้าไม่ได้แต้มเลย ผิดข้อกำหนด "ได้แต้มครั้งเดียวเท่านั้น" และ checkout ไม่มี state (`main.go:66-86`) จึงต้องเพิ่ม DB แลกกับการต้องดูแล component เพิ่มอีกตัว และ DB จะอยู่บน critical path ของ checkout |
+| 4 | ใส่ชื่อตัวเองเป็น Deciders และลบบรรทัด "Agent: …" | ADR ต้องมีผู้รับผิดชอบเป็นสถาปนิก ไม่ใช่ AI |
